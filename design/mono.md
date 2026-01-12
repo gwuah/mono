@@ -96,10 +96,9 @@ mono init <path>       Register environment, start containers, create tmux
 mono destroy <path>    Stop containers, kill tmux, clean data
 mono run <path>        Execute run script in tmux
 mono list              List all environments
-mono vars <path>       Print MONO_* environment variables
 ```
 
-Five commands. No more.
+Four commands. No more.
 
 ---
 
@@ -120,6 +119,38 @@ CREATE TABLE environments (
 
 One table. Ports are calculated deterministically from `env_id`, not stored.
 
+### Naming Derivation
+
+Names are derived from the workspace path for human readability:
+
+```
+/Users/x/frontend/.conductor/workspaces/feature-auth
+         ↑                              ↑
+      project                       workspace
+         └──────────────────────────────┘
+              "frontend-feature-auth"
+```
+
+```go
+func deriveNames(path string) (project, workspace string) {
+    parts := strings.Split(path, "/")
+    for i, part := range parts {
+        if part == ".conductor" && i > 0 {
+            project = parts[i-1]
+        }
+        if part == "workspaces" && i < len(parts)-1 {
+            workspace = parts[i+1]
+        }
+    }
+    return project, workspace
+}
+```
+
+| Purpose                           | Source                              |
+| --------------------------------- | ----------------------------------- |
+| Port allocation                   | `env_id` (from SQLite)              |
+| Naming (tmux, docker, data, logs) | `<project>-<workspace>` (from path) |
+
 ### Directory Structure
 
 ```
@@ -127,7 +158,7 @@ One table. Ports are calculated deterministically from `env_id`, not stored.
 ├── state.db                     # SQLite database
 ├── mono.log                     # Application log file
 └── data/
-    └── <env-name>/              # Per-environment data directory
+    └── <project>-<workspace>/   # Per-environment data directory
 ```
 
 ---
@@ -221,67 +252,58 @@ Deterministic from `env_id` - no storage needed.
 ```
 1. Check if path exists
 2. Check if already registered → error if yes
-3. Insert into environments table → get env_id
-4. Create data directory: ~/.mono/data/<name>
-5. If mono.yml has init script, run it
-6. If docker-compose.yml exists (Docker mode):
+3. Derive names from path → project, workspace (e.g., "frontend", "feature-auth")
+4. Insert into environments table → get env_id (for port allocation)
+5. Create data directory: ~/.mono/data/<project>-<workspace>/
+6. If mono.yml has init script, run it
+7. If docker-compose.yml exists (Docker mode):
    a. Parse compose file
-   b. Allocate ports for each service
+   b. Allocate ports for each service (using env_id)
    c. Generate docker-compose.mono.yml with port overrides
-   d. Run: docker compose -p mono-<name> up -d
-7. If mono.yml has setup script, run it
-8. Create tmux session: mono-<name>
-9. Export MONO_* variables to tmux
+   d. Run: docker compose -p mono-<project>-<workspace> up -d
+8. If mono.yml has setup script, run it
+9. Create tmux session: mono-<project>-<workspace>
+10. Export MONO_* variables to tmux
 ```
 
-**Simple mode**: Steps 6a-6d are skipped. No `MONO_<SERVICE>_PORT` vars, but `MONO_ENV_ID` is available for manual port derivation.
+**Simple mode**: Steps 7a-7d are skipped. No `MONO_<SERVICE>_PORT` vars, but `MONO_ENV_ID` is available for manual port derivation.
 
 ### mono destroy <path>
 
 ```
 1. Look up environment by path → error if not found
-2. If mono.yml has destroy script, run it (may need docker for db dumps, etc.)
-3. Kill tmux session: mono-<name> (stops processes that depend on docker)
-4. If Docker was used (docker_project is set):
-   a. Run: docker compose -p mono-<name> down -v
-5. Remove data directory: ~/.mono/data/<name>
-6. Delete from environments table
+2. Derive names from path → project, workspace
+3. If mono.yml has destroy script, run it (may need docker for db dumps, etc.)
+4. Kill tmux session: mono-<project>-<workspace> (stops processes that depend on docker)
+5. If Docker was used (docker_project is set):
+   a. Run: docker compose -p mono-<project>-<workspace> down -v
+6. Remove data directory: ~/.mono/data/<project>-<workspace>/
+7. Delete from environments table
 ```
 
-**Simple mode**: Step 4 is skipped.
+**Simple mode**: Step 5 is skipped.
 
 ### mono run <path>
 
 ```
 1. Look up environment by path → error if not found
-2. Read mono.yml for run script → error if no script
-3. Send command to tmux: tmux send-keys -t mono-<name> "<script>" Enter
+2. Derive names from path → project, workspace
+3. Read mono.yml for run script → error if no script
+4. Send command to tmux: tmux send-keys -t mono-<project>-<workspace> "<script>" Enter
 ```
 
 ### mono list
 
 ```
 1. Query all environments
-2. For each, check:
+2. For each, derive names and check:
    - tmux session exists?
    - Docker containers running?
 3. Print table:
-   NAME          PATH                                    STATUS
-   auth-feature  ~/.conductor/workspaces/auth-feature    running
-   payments      ~/.conductor/workspaces/payments        stopped
-```
-
-### mono vars <path>
-
-```
-1. Look up environment by path
-2. If docker_project is set, calculate service ports from env_id
-3. Print:
-   export MONO_ENV_NAME="auth-feature"
-   export MONO_ENV_ID="3"
-   export MONO_ENV_PATH="/Users/x/.conductor/workspaces/auth-feature"
-   export MONO_DATA_DIR="/Users/x/.mono/data/auth-feature"
-   export MONO_WEB_PORT="19300"  # only in Docker mode
+   NAME                      PATH                                         STATUS
+   frontend-feature-auth     ~/frontend/.conductor/workspaces/feature-auth    running
+   backend-feature-auth      ~/backend/.conductor/workspaces/feature-auth     running
+   frontend-payments         ~/frontend/.conductor/workspaces/payments        stopped
 ```
 
 ---
@@ -293,9 +315,9 @@ Deterministic from `env_id` - no storage needed.
 ```json
 {
   "scripts": {
-    "setup": "mono init \"$CONDUCTOR_ROOT_PATH\"",
-    "run": "mono run \"$CONDUCTOR_ROOT_PATH\"",
-    "archive": "mono destroy \"$CONDUCTOR_ROOT_PATH\""
+    "setup": "mono init \"$CONDUCTOR_WORKSPACE_PATH\"",
+    "run": "mono run \"$CONDUCTOR_WORKSPACE_PATH\"",
+    "archive": "mono destroy \"$CONDUCTOR_WORKSPACE_PATH\""
   }
 }
 ```
@@ -305,27 +327,28 @@ Deterministic from `env_id` - no storage needed.
 ```
 Conductor creates workspace (worktree)
          ↓
-Conductor setup script: mono init /path/to/workspace
+Conductor setup script: mono init /path/to/frontend/.conductor/workspaces/feature-auth
          ↓
-         ├── 1. Register in SQLite, create data dir
-         ├── 2. Run mono.yml init script (npm install, etc.)
-         ├── 3. Start docker containers with isolated ports/volumes/networks
-         ├── 4. Run mono.yml setup script (db migrations, etc.)
-         └── 5. Create tmux session with MONO_* vars
+         ├── 1. Derive names: project="frontend", workspace="feature-auth"
+         ├── 2. Register in SQLite (get env_id for ports), create data dir
+         ├── 3. Run mono.yml init script (npm install, etc.)
+         ├── 4. Start docker containers (mono-frontend-feature-auth) with isolated ports/volumes/networks
+         ├── 5. Run mono.yml setup script (db migrations, etc.)
+         └── 6. Create tmux session (mono-frontend-feature-auth) with MONO_* vars
          ↓
 Claude Code runs in workspace with full isolation
          ↓
 Conductor run button: mono run /path/to/workspace
          ↓
-mono: sends run script to tmux session
+mono: sends run script to tmux session mono-frontend-feature-auth
          ↓
 User archives workspace
          ↓
 Conductor archive script: mono destroy /path/to/workspace
          ↓
          ├── 1. Run mono.yml destroy script (may need docker)
-         ├── 2. Kill tmux session (stops processes using docker)
-         ├── 3. Stop docker containers, remove volumes
+         ├── 2. Kill tmux session mono-frontend-feature-auth
+         ├── 3. Stop docker containers mono-frontend-feature-auth, remove volumes
          └── 4. Remove data dir, delete from SQLite
          ↓
 Conductor deletes worktree
@@ -344,8 +367,7 @@ mono/
 │   │   ├── init.go
 │   │   ├── destroy.go
 │   │   ├── run.go
-│   │   ├── list.go
-│   │   └── vars.go
+│   │   └── list.go
 │   └── mono/
 │       ├── db.go           # database connection, schema
 │       ├── environment.go  # environment CRUD queries
@@ -361,7 +383,7 @@ mono/
 └── go.sum
 ```
 
-Two packages: `cli` for commands, `mono` for everything else.
+Two packages: `cli` (5 files), `mono` (10 files).
 
 ---
 
@@ -552,7 +574,7 @@ StopContainers(projectName string) error
 
 **Keep ApplyOverrides()** - essential for isolation (ports, networks, volumes).
 
-**Changes:** Rename prefix `piko-<project>-<env>` → `mono-<env>`
+**Changes:** Rename prefix `piko-<project>-<env>` → `mono-<project>-<workspace>`
 
 ---
 
@@ -569,7 +591,7 @@ KillSession(name string) error
 
 **Remove:** `ListPikoSessions()`, `CreateFullSession()`, window management
 
-**Naming:** Sessions are `mono-<env-name>`
+**Naming:** Sessions are `mono-<project>-<workspace>`
 
 ---
 
@@ -578,19 +600,22 @@ KillSession(name string) error
 **Source:** `piko/internal/env/vars.go`
 
 ```go
+func DeriveNames(path string) (project, workspace string)
+
 type MonoEnv struct {
-    EnvName  string
-    EnvID    int64
-    EnvPath  string
-    DataDir  string
-    Ports    map[string]int
+    Project   string
+    Workspace string
+    EnvID     int64
+    EnvPath   string
+    DataDir   string
+    Ports     map[string]int
 }
 
 func (e *MonoEnv) ToEnvSlice() []string
-func (e *MonoEnv) ToShellExport() string
+func (e *MonoEnv) FullName() string  // returns "<project>-<workspace>"
 ```
 
-**Changes:** `PIKO_*` → `MONO_*`, remove project fields
+**Changes:** `PIKO_*` → `MONO_*`, add `DeriveNames()`, add `FullName()`
 
 ---
 
@@ -678,10 +703,10 @@ require (
 [ ] 7. Create internal/mono/environment.go
 [ ] 8. Create internal/mono/docker.go (rename prefix)
 [ ] 9. Create internal/mono/tmux.go (simplify)
-[ ] 10. Create internal/mono/env.go (rename prefix)
+[ ] 10. Create internal/mono/env.go (rename prefix, add deriveNames)
 [ ] 11. Create internal/mono/config.go (simplify)
 [ ] 12. Create internal/mono/operations.go
-[ ] 13. Create internal/cli/ (5 commands)
+[ ] 13. Create internal/cli/ (4 commands: init, destroy, run, list)
 [ ] 14. Create cmd/mono/main.go
 [ ] 15. Test with Conductor
 ```

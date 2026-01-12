@@ -1,0 +1,5 @@
+scripts:
+  init: "echo 'Running init script' && go mod download"
+  setup: "echo 'Running setup script'"
+  run: "go run ./cmd/mono list"
+  destroy: "echo 'Cleaning up'"
