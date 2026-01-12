@@ -11,18 +11,24 @@ type Environment struct {
 	ID            int64
 	Path          string
 	DockerProject sql.NullString
+	RootPath      sql.NullString
 	CreatedAt     time.Time
 }
 
-func (db *DB) InsertEnvironment(path, dockerProject string) (int64, error) {
+func (db *DB) InsertEnvironment(path, dockerProject, rootPath string) (int64, error) {
 	var dp sql.NullString
 	if dockerProject != "" {
 		dp = sql.NullString{String: dockerProject, Valid: true}
 	}
 
+	var rp sql.NullString
+	if rootPath != "" {
+		rp = sql.NullString{String: rootPath, Valid: true}
+	}
+
 	result, err := db.conn.Exec(
-		`INSERT INTO environments (path, docker_project) VALUES (?, ?)`,
-		path, dp,
+		`INSERT INTO environments (path, docker_project, root_path) VALUES (?, ?, ?)`,
+		path, dp, rp,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert environment: %w", err)
@@ -38,12 +44,12 @@ func (db *DB) InsertEnvironment(path, dockerProject string) (int64, error) {
 
 func (db *DB) GetEnvironmentByPath(path string) (*Environment, error) {
 	row := db.conn.QueryRow(
-		`SELECT id, path, docker_project, created_at FROM environments WHERE path = ?`,
+		`SELECT id, path, docker_project, root_path, created_at FROM environments WHERE path = ?`,
 		path,
 	)
 
 	var e Environment
-	err := row.Scan(&e.ID, &e.Path, &e.DockerProject, &e.CreatedAt)
+	err := row.Scan(&e.ID, &e.Path, &e.DockerProject, &e.RootPath, &e.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, errors.New("environment not found")
 	}
@@ -56,7 +62,7 @@ func (db *DB) GetEnvironmentByPath(path string) (*Environment, error) {
 
 func (db *DB) ListEnvironments() ([]*Environment, error) {
 	rows, err := db.conn.Query(
-		`SELECT id, path, docker_project, created_at FROM environments ORDER BY created_at DESC`,
+		`SELECT id, path, docker_project, root_path, created_at FROM environments ORDER BY created_at DESC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list environments: %w", err)
@@ -66,7 +72,7 @@ func (db *DB) ListEnvironments() ([]*Environment, error) {
 	var environments []*Environment
 	for rows.Next() {
 		var e Environment
-		err := rows.Scan(&e.ID, &e.Path, &e.DockerProject, &e.CreatedAt)
+		err := rows.Scan(&e.ID, &e.Path, &e.DockerProject, &e.RootPath, &e.CreatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan environment: %w", err)
 		}
