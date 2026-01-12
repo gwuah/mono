@@ -315,9 +315,9 @@ Deterministic from `env_id` - no storage needed.
 ```json
 {
   "scripts": {
-    "setup": "mono init \"$CONDUCTOR_ROOT_PATH\"",
-    "run": "mono run \"$CONDUCTOR_ROOT_PATH\"",
-    "archive": "mono destroy \"$CONDUCTOR_ROOT_PATH\""
+    "setup": "mono init \"$CONDUCTOR_WORKSPACE_PATH\"",
+    "run": "mono run \"$CONDUCTOR_WORKSPACE_PATH\"",
+    "archive": "mono destroy \"$CONDUCTOR_WORKSPACE_PATH\""
   }
 }
 ```

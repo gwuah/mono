@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/anthropics/mono/internal/mono"
+	"github.com/gwuah/mono/internal/mono"
 	"github.com/spf13/cobra"
 )
 

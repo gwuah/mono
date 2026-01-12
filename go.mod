@@ -1,4 +1,4 @@
-module github.com/anthropics/mono
+module github.com/gwuah/mono
 
 go 1.24.0
 

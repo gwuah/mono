@@ -1,0 +1,7 @@
+{
+  "scripts": {
+    "setup": "mono init \"$CONDUCTOR_WORKSPACE_PATH\"",
+    "run": "mono run \"$CONDUCTOR_WORKSPACE_PATH\"",
+    "archive": "mono destroy \"$CONDUCTOR_WORKSPACE_PATH\""
+  }
+}

@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/anthropics/mono/internal/cli"
+	"github.com/gwuah/mono/internal/cli"
 )
 
 func main() {
