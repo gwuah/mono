@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS environments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     path TEXT UNIQUE NOT NULL,
     docker_project TEXT,
+    root_path TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 `
@@ -77,5 +78,8 @@ func (db *DB) Initialize() error {
 	if err != nil {
 		return fmt.Errorf("failed to create schema: %w", err)
 	}
+
+	db.conn.Exec(`ALTER TABLE environments ADD COLUMN root_path TEXT`)
+
 	return nil
 }

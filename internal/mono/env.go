@@ -20,14 +20,15 @@ func DeriveNames(path string) (project, workspace string) {
 }
 
 type MonoEnv struct {
-	EnvName string
-	EnvID   int64
-	EnvPath string
-	DataDir string
-	Ports   map[string]int
+	EnvName  string
+	EnvID    int64
+	EnvPath  string
+	RootPath string
+	DataDir  string
+	Ports    map[string]int
 }
 
-func BuildEnv(envName string, envID int64, envPath string, allocations []Allocation) *MonoEnv {
+func BuildEnv(envName string, envID int64, envPath, rootPath string, allocations []Allocation) *MonoEnv {
 	home, _ := os.UserHomeDir()
 	dataDir := filepath.Join(home, ".mono", "data", envName)
 
@@ -38,11 +39,12 @@ func BuildEnv(envName string, envID int64, envPath string, allocations []Allocat
 	}
 
 	return &MonoEnv{
-		EnvName: envName,
-		EnvID:   envID,
-		EnvPath: envPath,
-		DataDir: dataDir,
-		Ports:   ports,
+		EnvName:  envName,
+		EnvID:    envID,
+		EnvPath:  envPath,
+		RootPath: rootPath,
+		DataDir:  dataDir,
+		Ports:    ports,
 	}
 }
 
@@ -61,6 +63,7 @@ func (e *MonoEnv) ToEnvSlice() []string {
 		fmt.Sprintf("MONO_ENV_NAME=%s", e.EnvName),
 		fmt.Sprintf("MONO_ENV_ID=%d", e.EnvID),
 		fmt.Sprintf("MONO_ENV_PATH=%s", e.EnvPath),
+		fmt.Sprintf("MONO_ROOT_PATH=%s", e.RootPath),
 		fmt.Sprintf("MONO_DATA_DIR=%s", e.DataDir),
 	}
 

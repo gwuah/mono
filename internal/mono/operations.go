@@ -69,7 +69,9 @@ func Init(path string) error {
 		dockerProject = fmt.Sprintf("mono-%s", envName)
 	}
 
-	envID, err := db.InsertEnvironment(path, dockerProject)
+	rootPath := os.Getenv("CONDUCTOR_ROOT_PATH")
+
+	envID, err := db.InsertEnvironment(path, dockerProject, rootPath)
 	if err != nil {
 		cleanup()
 		return fmt.Errorf("failed to save environment: %w", err)
@@ -84,7 +86,7 @@ func Init(path string) error {
 	var allocations []Allocation
 
 	if cfg.Scripts.Init != "" {
-		monoEnv := BuildEnv(envName, envID, path, allocations)
+		monoEnv := BuildEnv(envName, envID, path, rootPath, allocations)
 		logger.Log("running init script: %s", cfg.Scripts.Init)
 		if err := runScript(path, cfg.Scripts.Init, monoEnv.ToEnvSlice(), logger); err != nil {
 			cleanupWithDB()
@@ -129,7 +131,7 @@ func Init(path string) error {
 	}
 
 	if cfg.Scripts.Setup != "" {
-		monoEnv := BuildEnv(envName, envID, path, allocations)
+		monoEnv := BuildEnv(envName, envID, path, rootPath, allocations)
 		logger.Log("running setup script: %s", cfg.Scripts.Setup)
 		if err := runScript(path, cfg.Scripts.Setup, monoEnv.ToEnvSlice(), logger); err != nil {
 			if !isSimpleMode {
@@ -141,7 +143,7 @@ func Init(path string) error {
 		logger.Log("setup script completed")
 	}
 
-	monoEnv := BuildEnv(envName, envID, path, allocations)
+	monoEnv := BuildEnv(envName, envID, path, rootPath, allocations)
 	sessionName := SessionName(envName)
 	if err := CreateSession(sessionName, path, monoEnv.ToEnvSlice()); err != nil {
 		logger.Log("warning: failed to create tmux session: %v", err)
@@ -191,8 +193,13 @@ func Destroy(path string) error {
 
 	cfg, _ := LoadConfig(path)
 
+	rootPath := ""
+	if env.RootPath.Valid {
+		rootPath = env.RootPath.String
+	}
+
 	if cfg != nil && cfg.Scripts.Destroy != "" {
-		monoEnv := BuildEnv(envName, env.ID, path, nil)
+		monoEnv := BuildEnv(envName, env.ID, path, rootPath, nil)
 		logger.Log("running destroy script: %s", cfg.Scripts.Destroy)
 		if err := runScript(path, cfg.Scripts.Destroy, monoEnv.ToEnvSlice(), logger); err != nil {
 			logger.Log("warning: destroy script failed: %v", err)
