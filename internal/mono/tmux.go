@@ -21,23 +21,25 @@ func SessionExists(sessionName string) bool {
 }
 
 func CreateSession(sessionName, workDir string, envVars []string) error {
-	output, err := Command("tmux", "new-session", "-d", "-s", sessionName, "-c", workDir).
+	args := []string{"new-session", "-d", "-s", sessionName, "-c", workDir}
+	for _, envVar := range envVars {
+		args = append(args, "-e", envVar)
+	}
+
+	output, err := Command("tmux", args...).
 		Timeout(tmuxTimeout).
 		CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to create session: %s: %w", string(output), err)
 	}
 
-	for _, envVar := range envVars {
-		Command("tmux", "set-environment", "-t", sessionName, strings.Split(envVar, "=")[0], strings.SplitN(envVar, "=", 2)[1]).
-			Timeout(tmuxTimeout).
-			Run()
-	}
-
 	return nil
 }
 
 func SendKeys(sessionName, keys string) error {
+	Command("tmux", "send-keys", "-t", sessionName, "C-u").
+		Timeout(tmuxTimeout).
+		Run()
 	return Command("tmux", "send-keys", "-t", sessionName, keys, "Enter").
 		Timeout(tmuxTimeout).
 		Run()

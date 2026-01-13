@@ -285,12 +285,22 @@ func Run(path string) error {
 		return fmt.Errorf("tmux session does not exist: %s", sessionName)
 	}
 
-	logger.Log("sending to tmux: %s", cfg.Scripts.Run)
-	if err := SendKeys(sessionName, cfg.Scripts.Run); err != nil {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %w", err)
+	}
+	dataDir := filepath.Join(home, ".mono", "data", envName)
+	scriptPath := filepath.Join(dataDir, "run.sh")
+
+	if err := os.WriteFile(scriptPath, []byte(cfg.Scripts.Run), 0755); err != nil {
+		return fmt.Errorf("failed to write run script: %w", err)
+	}
+
+	logger.Log("sending to tmux: source %s", scriptPath)
+	if err := SendKeys(sessionName, "source "+scriptPath); err != nil {
 		return fmt.Errorf("failed to send keys to tmux: %w", err)
 	}
 
-	fmt.Printf("Running: %s\n", cfg.Scripts.Run)
 	fmt.Printf("Session: %s\n", sessionName)
 	return nil
 }
