@@ -1,7 +1,7 @@
 ## Install
 
-```
-go install github.com/gwuah/mono/cmd/mono@latest
+```bash
+curl -fsSL https://gwuah.github.io/mono/install.sh | bash
 ```
 
 ## Setup
