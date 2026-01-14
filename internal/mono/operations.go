@@ -60,6 +60,62 @@ func Init(path string) error {
 		cleanup()
 		return fmt.Errorf("failed to load config: %w", err)
 	}
+	cfg.ApplyDefaults(path)
+
+	cm, err := NewCacheManager()
+	if err != nil {
+		cleanup()
+		return fmt.Errorf("failed to initialize cache: %w", err)
+	}
+
+	if err := cm.EnsureDirectories(); err != nil {
+		cleanup()
+		return fmt.Errorf("failed to create cache directories: %w", err)
+	}
+
+	if cm.SccacheAvailable {
+		logger.Log("sccache detected, compilation caching enabled")
+	} else {
+		logger.Log("sccache not found, compilation caching disabled")
+		logger.Log("hint: install sccache for faster builds: cargo install sccache")
+	}
+
+	rootPath := os.Getenv("CONDUCTOR_ROOT_PATH")
+
+	var cacheEntries []ArtifactCacheEntry
+	if len(cfg.Build.Artifacts) > 0 && rootPath != "" {
+		entries, err := cm.PrepareArtifactCache(cfg.Build.Artifacts, rootPath, path)
+		if err != nil {
+			logger.Log("warning: failed to prepare artifact cache: %v", err)
+		} else {
+			cacheEntries = entries
+		}
+
+		for i := range cacheEntries {
+			entry := &cacheEntries[i]
+			if entry.Hit {
+				logger.Log("cache hit for %s (key: %s)", entry.Name, entry.Key)
+				if err := cm.RestoreFromCache(*entry); err != nil {
+					logger.Log("warning: failed to restore cache: %v", err)
+					entry.Hit = false
+				}
+			} else {
+				logger.Log("cache miss for %s (key: %s)", entry.Name, entry.Key)
+			}
+		}
+	}
+
+	allHit := true
+	for _, entry := range cacheEntries {
+		if !entry.Hit {
+			allHit = false
+			break
+		}
+	}
+
+	cacheEnvVars := cm.EnvVars(cfg.Build)
+	cacheEnvVars = append(cacheEnvVars, fmt.Sprintf("MONO_CACHE_HIT=%t", allHit))
+	cacheEnvVars = append(cacheEnvVars, "MONO_CACHE_DIR="+cm.LocalCacheDir)
 
 	_, composeErr := DetectComposeFile(path)
 	isSimpleMode := composeErr != nil
@@ -68,8 +124,6 @@ func Init(path string) error {
 	if !isSimpleMode {
 		dockerProject = fmt.Sprintf("mono-%s", envName)
 	}
-
-	rootPath := os.Getenv("CONDUCTOR_ROOT_PATH")
 
 	envID, err := db.InsertEnvironment(path, dockerProject, rootPath)
 	if err != nil {
@@ -88,11 +142,23 @@ func Init(path string) error {
 	if cfg.Scripts.Init != "" {
 		monoEnv := BuildEnv(envName, envID, path, rootPath, allocations)
 		logger.Log("running init script: %s", cfg.Scripts.Init)
-		if err := runScript(path, cfg.Scripts.Init, monoEnv.ToEnvSlice(), logger); err != nil {
+		if err := runScript(path, cfg.Scripts.Init, monoEnv.ToEnvSlice(), cacheEnvVars, logger); err != nil {
 			cleanupWithDB()
 			return fmt.Errorf("init script failed: %w", err)
 		}
 		logger.Log("init script completed")
+	}
+
+	for i := range cacheEntries {
+		entry := &cacheEntries[i]
+		if !entry.Hit {
+			if err := cm.StoreToCache(*entry); err != nil {
+				logger.Log("warning: failed to store %s to cache: %v", entry.Name, err)
+			} else {
+				logger.Log("stored %s to cache (key: %s)", entry.Name, entry.Key)
+				entry.Hit = true
+			}
+		}
 	}
 
 	if !isSimpleMode {
@@ -133,7 +199,7 @@ func Init(path string) error {
 	if cfg.Scripts.Setup != "" {
 		monoEnv := BuildEnv(envName, envID, path, rootPath, allocations)
 		logger.Log("running setup script: %s", cfg.Scripts.Setup)
-		if err := runScript(path, cfg.Scripts.Setup, monoEnv.ToEnvSlice(), logger); err != nil {
+		if err := runScript(path, cfg.Scripts.Setup, monoEnv.ToEnvSlice(), cacheEnvVars, logger); err != nil {
 			if !isSimpleMode {
 				StopContainers(dockerProject, path, true, nil, nil)
 			}
@@ -201,7 +267,7 @@ func Destroy(path string) error {
 	if cfg != nil && cfg.Scripts.Destroy != "" {
 		monoEnv := BuildEnv(envName, env.ID, path, rootPath, nil)
 		logger.Log("running destroy script: %s", cfg.Scripts.Destroy)
-		if err := runScript(path, cfg.Scripts.Destroy, monoEnv.ToEnvSlice(), logger); err != nil {
+		if err := runScript(path, cfg.Scripts.Destroy, monoEnv.ToEnvSlice(), nil, logger); err != nil {
 			logger.Log("warning: destroy script failed: %v", err)
 		} else {
 			logger.Log("destroy script completed")
@@ -351,7 +417,7 @@ func List() ([]EnvironmentStatus, error) {
 	return statuses, nil
 }
 
-func runScript(workDir, script string, envVars []string, logger *FileLogger) error {
+func runScript(workDir, script string, envVars []string, extraEnvVars []string, logger *FileLogger) error {
 	stdout := NewLogWriter(logger, "out")
 	stderr := NewLogWriter(logger, "err")
 
@@ -360,6 +426,7 @@ func runScript(workDir, script string, envVars []string, logger *FileLogger) err
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.Env = append(os.Environ(), envVars...)
+	cmd.Env = append(cmd.Env, extraEnvVars...)
 
 	done := make(chan error, 1)
 	go func() {
