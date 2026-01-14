@@ -336,6 +336,161 @@ func TestE2ECacheKeyChangesWithLockfile(t *testing.T) {
 	cmd.Run()
 }
 
+func TestE2ECacheStats(t *testing.T) {
+	if _, err := exec.LookPath("cargo"); err != nil {
+		t.Skip("cargo not installed, skipping e2e test")
+	}
+
+	projectRoot := findProjectRoot(t)
+	monoBin := filepath.Join(projectRoot, "mono")
+
+	t.Log("Building mono binary...")
+	cmd := exec.Command("go", "build", "-o", monoBin, "./cmd/mono")
+	cmd.Dir = projectRoot
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to build mono: %v\n%s", err, out)
+	}
+	defer os.Remove(monoBin)
+
+	testDir, _ := filepath.EvalSymlinks(t.TempDir())
+	envPath := filepath.Join(testDir, "testproj")
+
+	t.Cleanup(func() {
+		cleanupTestEnvironment(t, monoBin, envPath, testDir)
+		db, err := OpenDB()
+		if err == nil {
+			db.DeleteAllCacheEvents()
+			db.Close()
+		}
+	})
+
+	t.Log("Creating test cargo project...")
+	cmd = exec.Command("cargo", "new", "testproj", "--quiet")
+	cmd.Dir = testDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create cargo project: %v", err)
+	}
+
+	cmd = exec.Command("cargo", "generate-lockfile", "--quiet")
+	cmd.Dir = envPath
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to generate lockfile: %v", err)
+	}
+
+	monoYml := `scripts:
+  init: cargo build --quiet
+`
+	if err := os.WriteFile(filepath.Join(envPath, "mono.yml"), []byte(monoYml), 0644); err != nil {
+		t.Fatalf("failed to write mono.yml: %v", err)
+	}
+
+	home, _ := os.UserHomeDir()
+	cacheDir := filepath.Join(home, ".mono", "cache_local")
+	os.RemoveAll(cacheDir)
+
+	db, err := OpenDB()
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	db.DeleteAllCacheEvents()
+	db.Close()
+
+	t.Log("Running first mono init (cache miss)...")
+	cmd = exec.Command(monoBin, "init", ".")
+	cmd.Dir = envPath
+	cmd.Env = append(os.Environ(), "CONDUCTOR_ROOT_PATH="+testDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("mono init failed: %v\n%s", err, out)
+	}
+
+	t.Log("Checking cache stats after first init...")
+	cmd = exec.Command(monoBin, "cache", "stats")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("mono cache stats failed: %v\n%s", err, out)
+	}
+	statsOutput := string(out)
+
+	if !strings.Contains(statsOutput, "cargo") {
+		t.Errorf("expected 'cargo' in stats output, got:\n%s", statsOutput)
+	}
+	if !strings.Contains(statsOutput, "0") {
+		t.Errorf("expected '0' hits in stats output after miss, got:\n%s", statsOutput)
+	}
+
+	t.Log("Destroying and recreating environment (cache hit)...")
+	cmd = exec.Command(monoBin, "destroy", ".")
+	cmd.Dir = envPath
+	cmd.Run()
+
+	os.RemoveAll(filepath.Join(envPath, "target"))
+
+	db, err = OpenDB()
+	if err == nil {
+		db.DeleteEnvironment(envPath)
+		db.Close()
+	}
+
+	cmd = exec.Command(monoBin, "init", ".")
+	cmd.Dir = envPath
+	cmd.Env = append(os.Environ(), "CONDUCTOR_ROOT_PATH="+testDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("mono init failed: %v\n%s", err, out)
+	}
+
+	t.Log("Checking cache stats after cache hit...")
+	cmd = exec.Command(monoBin, "cache", "stats")
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("mono cache stats failed: %v\n%s", err, out)
+	}
+	statsOutput = string(out)
+
+	if !strings.Contains(statsOutput, "1") {
+		t.Errorf("expected '1' hit in stats output after cache hit, got:\n%s", statsOutput)
+	}
+
+	t.Log("Testing mono cache clean --all...")
+	cmd = exec.Command(monoBin, "cache", "clean", "--all")
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("mono cache clean --all failed: %v\n%s", err, out)
+	}
+	cleanOutput := string(out)
+
+	if !strings.Contains(cleanOutput, "Removed") {
+		t.Errorf("expected 'Removed' in clean output, got:\n%s", cleanOutput)
+	}
+
+	t.Log("Verifying cache is empty after clean...")
+	cmd = exec.Command(monoBin, "cache", "stats")
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("mono cache stats failed: %v\n%s", err, out)
+	}
+	statsOutput = string(out)
+
+	if !strings.Contains(statsOutput, "No cache entries found") {
+		t.Errorf("expected 'No cache entries found' after clean, got:\n%s", statsOutput)
+	}
+
+	db, err = OpenDB()
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	defer db.Close()
+
+	stats, err := db.GetCacheStats()
+	if err != nil {
+		t.Fatalf("failed to get cache stats: %v", err)
+	}
+	if len(stats) != 0 {
+		t.Errorf("expected 0 cache events after clean, got %d", len(stats))
+	}
+
+	t.Log("Cache stats e2e test passed!")
+}
+
 func findProjectRoot(t *testing.T) string {
 	t.Helper()
 
