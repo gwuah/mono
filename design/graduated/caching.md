@@ -353,8 +353,10 @@ Cargo stores debug and release builds in separate subdirectories (`target/debug`
 ### Manual Commands
 
 ```bash
-mono cache status            # show cache size and entries
-mono cache clean             # remove all cache entries
+mono cache stats             # show cache size, hits, and last used
+mono cache clean             # interactively select entries to remove
+mono cache clean --older-than 30d  # remove entries older than 30 days
+mono cache clean --all       # remove all cache entries
 ```
 
 ## Environment Variables
@@ -374,11 +376,10 @@ Available in scripts:
 
 **1. Corrupted cache entry**
 
-If a cache entry is corrupted (partial write, disk error):
+If a cache entry is corrupted (partial write, disk error), remove it and let the next build recreate it:
 
 ```
-mono cache rebuild <hash>     # rebuild specific entry
-mono cache verify             # check all entries for corruption
+mono cache clean              # select and remove the corrupted entry
 ```
 
 **2. Lockfile changes mid-session**
@@ -441,35 +442,38 @@ Typical improvements:
 
 ## Implementation Phases
 
-### Phase 1: Shared Caches (Layer 1 + 2)
+See `design/phase*.md` for detailed implementation specs.
 
-Low effort, good gains.
+### Phase 1: Shared Caches (Layer 1 + 2)
 
 - Auto-inject `CARGO_HOME`, `npm_config_cache` env vars
 - Detect sccache installation, set `RUSTC_WRAPPER` if available
-- Update `.mono/` gitignore patterns
+- Global cache directory at `~/.mono/`
 
 ### Phase 2: Artifact Cache (Layer 3)
-
-Medium effort, great gains.
 
 - Implement cache key computation
 - Implement hardlink_tree function
 - Basic cache storage/retrieval
-- Integration with `mono env create`
 - Auto-detect Cargo.lock / package-lock.json
+
+### Phase 2a: Sync
+
+- `mono sync` command to update environment from git changes
+- Re-hardlink artifacts after lockfile changes
+- Rebuild only when necessary
+
+### Phase 2b: Seed
+
+- `mono seed` command to pre-populate cache
+- Build artifacts without creating an environment
+- Useful for CI warming or team cache sharing
 
 ### Phase 3: Cache Management
 
-- `mono cache` CLI commands
-- Cache size reporting
-- Manual cleanup commands
-
-### Phase 4: Polish
-
-- Detect lockfile identity across envs for stats
-- Cache hit/miss reporting: "Saved 3m42s via shared cache"
-- Optional cache size limits with LRU eviction
+- `mono cache stats` - show size, hits, last used per entry
+- `mono cache clean` - interactive selection or `--older-than`/`--all` flags
+- DB tracking for hit/miss events
 
 ## Open Questions
 
