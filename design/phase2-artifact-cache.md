@@ -2,25 +2,30 @@
 
 ## Overview
 
-This phase implements Layer 3 - the artifact cache with hardlinks. This is the most impactful optimization, enabling instant environment creation when dependencies haven't changed.
+This phase implements artifact caching with hardlinks. This is the most impactful optimization, enabling instant environment creation when dependencies haven't changed.
 
 **Expected outcome**: Environments with identical lockfiles share build artifacts via hardlinks. Environment creation goes from minutes to seconds on cache hit.
 
+## Scope
+
+This document covers the **core** artifact cache implementation. The following are implemented as incremental additions:
+
+- **[Phase 2a: Sync](./sync.md)** - Syncing artifacts after dependency changes
+- **[Phase 2b: Seed](./seed.md)** - Populating cache from existing project root artifacts
+
 ## Prerequisites
 
-- Phase 1 completed (shared download cache)
+- Phase 1 completed (sccache compilation cache)
 
 ## Design Decision: Project-Namespaced Cache in `~/.mono/cache_local/`
 
-Artifact caches are stored in `~/.mono/cache_local/` and namespaced by project. Unlike Layer 1/2 caches in `cache_global/` (which are globally shareable), `target/` and `node_modules/` contents depend on project structure.
+Artifact caches are stored in `~/.mono/cache_local/` and namespaced by project. Unlike sccache in `cache_global/` (which is globally shareable), `target/` and `node_modules/` contents depend on project structure.
 
 ```
 ~/.mono/
-├── cache_global/           # Layers 1 & 2: shared across ALL projects
-│   ├── cargo/
-│   ├── npm/
-│   └── sccache/
-└── cache_local/            # Layer 3: per-project artifact cache
+├── cache_global/
+│   └── sccache/            # Phase 1: compilation cache
+└── cache_local/            # Phase 2: per-project artifact cache
     └── <project-id>/
         ├── cargo/
         │   └── <lockfile-hash>/
@@ -39,17 +44,15 @@ Artifact caches are stored in `~/.mono/cache_local/` and namespaced by project. 
 
 ## Related Documents
 
-- **[sync.md](./sync.md)** - Cache sync design (syncing artifacts after dependency changes)
-- **[seed.md](./seed.md)** - Cache seeding design (populating cache from existing artifacts in project root)
+- **[flaws.md](./flaws.md)** - Analysis of edge cases and potential issues with hardlink caching
 
 ## Files to Modify
 
 | File | Changes |
 |------|---------|
 | `internal/mono/config.go` | Add `Artifacts` config section |
-| `internal/mono/cache.go` | Add project ID, cache key computation, hardlink operations, sync |
-| `internal/mono/operations.go` | Integrate cache restore into `Init()`, sync into `Destroy()` |
-| `internal/cli/sync.go` | **New file** - `mono sync` CLI command |
+| `internal/mono/cache.go` | Add project ID, cache key computation, hardlink operations, post-restore fixes |
+| `internal/mono/operations.go` | Integrate cache restore/store into `Init()` |
 
 ## Implementation Steps
 
@@ -66,18 +69,11 @@ type ArtifactConfig struct {
 }
 
 type BuildConfig struct {
-    Strategy      string           `yaml:"strategy"`
-    DownloadCache bool             `yaml:"download_cache"`
-    Sccache       *bool            `yaml:"sccache"`
-    Artifacts     []ArtifactConfig `yaml:"artifacts"`
+    Sccache   *bool            `yaml:"sccache"`
+    Artifacts []ArtifactConfig `yaml:"artifacts"`
 }
 
 func (c *Config) ApplyDefaults(envPath string) {
-    if c.Build.Strategy == "" {
-        c.Build.Strategy = "layered"
-    }
-    c.Build.DownloadCache = true
-
     if len(c.Build.Artifacts) == 0 {
         c.Build.Artifacts = detectArtifacts(envPath)
     }
@@ -130,7 +126,7 @@ func detectArtifacts(envPath string) []ArtifactConfig {
 
 **File**: `internal/mono/cache.go`
 
-Add to existing CacheManager from Phase 1:
+Extend the CacheManager from Phase 1 with project support:
 
 ```go
 import (
@@ -142,14 +138,10 @@ import (
 )
 
 type CacheManager struct {
-    HomeDir        string
-    GlobalCacheDir string
-    LocalCacheDir  string
-    CargoHome      string
-    NpmCache       string
-    YarnCache      string
-    PnpmHome       string
-    SccacheDir     string
+    HomeDir          string
+    GlobalCacheDir   string
+    LocalCacheDir    string
+    SccacheDir       string
     SccacheAvailable bool
 }
 
@@ -166,10 +158,6 @@ func NewCacheManager() (*CacheManager, error) {
         HomeDir:        homeDir,
         GlobalCacheDir: globalCacheDir,
         LocalCacheDir:  localCacheDir,
-        CargoHome:      filepath.Join(globalCacheDir, "cargo"),
-        NpmCache:       filepath.Join(globalCacheDir, "npm"),
-        YarnCache:      filepath.Join(globalCacheDir, "yarn"),
-        PnpmHome:       filepath.Join(globalCacheDir, "pnpm"),
         SccacheDir:     filepath.Join(globalCacheDir, "sccache"),
     }
 
@@ -345,6 +333,60 @@ func (cm *CacheManager) RestoreFromCache(entry ArtifactCacheEntry) error {
         if err := HardlinkTree(srcPath, envPath); err != nil {
             return fmt.Errorf("failed to restore cache for %s: %w", entry.Name, err)
         }
+
+        if err := cm.ApplyPostRestoreFixes(entry.Name, envPath); err != nil {
+            return fmt.Errorf("failed to apply post-restore fixes for %s: %w", entry.Name, err)
+        }
+    }
+    return nil
+}
+
+// ApplyPostRestoreFixes handles path-dependent artifacts that break when hardlinked
+// to a different location. See flaws.md for detailed analysis.
+func (cm *CacheManager) ApplyPostRestoreFixes(artifactName, envPath string) error {
+    switch artifactName {
+    case "cargo":
+        return cm.cleanCargoFingerprints(envPath)
+    case "npm", "yarn", "pnpm":
+        return cm.cleanNodeModulesBin(envPath)
+    default:
+        return nil
+    }
+}
+
+// cleanCargoFingerprints removes .fingerprint directories from target/.
+// Cargo stores absolute paths in fingerprints, causing full rebuilds when
+// artifacts are restored to a different path. Removing fingerprints forces
+// Cargo to regenerate them (fast, metadata only) while keeping compiled
+// artifacts (*.rlib, *.rmeta) intact.
+func (cm *CacheManager) cleanCargoFingerprints(targetDir string) error {
+    fingerprintDirs := []string{
+        filepath.Join(targetDir, "debug", ".fingerprint"),
+        filepath.Join(targetDir, "release", ".fingerprint"),
+        filepath.Join(targetDir, ".fingerprint"),
+    }
+
+    for _, dir := range fingerprintDirs {
+        if dirExists(dir) {
+            if err := os.RemoveAll(dir); err != nil {
+                return fmt.Errorf("failed to clean fingerprints at %s: %w", dir, err)
+            }
+        }
+    }
+
+    return nil
+}
+
+// cleanNodeModulesBin removes the .bin directory from node_modules.
+// npm/yarn/pnpm store absolute path symlinks in .bin/, which break when
+// restored to a different path. The build script should run `npm rebuild`
+// (or equivalent) to regenerate these symlinks.
+func (cm *CacheManager) cleanNodeModulesBin(nodeModulesDir string) error {
+    binDir := filepath.Join(nodeModulesDir, ".bin")
+    if dirExists(binDir) {
+        if err := os.RemoveAll(binDir); err != nil {
+            return fmt.Errorf("failed to clean .bin at %s: %w", binDir, err)
+        }
     }
     return nil
 }
@@ -460,11 +502,9 @@ func Init(path string) error {
 ├── state.db
 ├── mono.log
 ├── data/
-├── cache_global/           # Layers 1 & 2: shared across ALL projects
-│   ├── cargo/              # Layer 1: global CARGO_HOME
-│   ├── npm/                # Layer 1: global npm cache
-│   └── sccache/            # Layer 2: global compilation cache
-└── cache_local/            # Layer 3: per-project artifact cache
+├── cache_global/
+│   └── sccache/            # Phase 1: compilation cache
+└── cache_local/            # Phase 2: per-project artifact cache
     └── a1b2c3d4e5f6/       # project ID (hash of /Users/x/myproject)
         ├── cargo/
         │   └── 7g8h9i0j/
@@ -592,23 +632,40 @@ func TestHardlinkTree(t *testing.T) {
 }
 ```
 
+## Post-Restore Build Script Requirements
+
+After restoring from cache, certain artifacts need regeneration due to absolute paths. The post-restore fixes handle cleanup, but build scripts may need additional steps:
+
+**For npm/yarn/pnpm projects**: The `.bin/` directory is removed after restore. Build scripts should include `npm rebuild` (or equivalent) to regenerate CLI symlinks:
+
+```bash
+# Example mono.yaml init script
+scripts:
+  init: |
+    if [ "$MONO_CACHE_HIT" = "true" ]; then
+      npm rebuild  # Regenerates .bin/ symlinks
+    else
+      npm install
+    fi
+```
+
+**For Cargo projects**: The `.fingerprint/` directories are removed. No script changes needed - Cargo automatically regenerates fingerprints on next build (~5-10 seconds overhead).
+
 ## Acceptance Criteria
 
 - [ ] Cache key computed from lockfiles + tool versions
 - [ ] Auto-detection of Cargo.lock, package-lock.json, yarn.lock, pnpm-lock.yaml
 - [ ] First env creation stores artifacts in `~/.mono/cache_local/<project-id>/<type>/<hash>/`
 - [ ] Subsequent envs with same lockfile restore via hardlinks
+- [ ] Post-restore fixes applied (fingerprint cleaning, .bin/ removal)
 - [ ] Build script runs after restore for incremental source compilation
 - [ ] Modifications in one env don't affect others (COW via hardlink breakage)
 - [ ] Graceful fallback to copy when hardlinks not supported
 - [ ] `MONO_CACHE_HIT` env var correctly set
 - [ ] Different projects have isolated cache namespaces
 - [ ] No files created in project directory
-- [ ] `mono sync <path>` syncs current artifacts to cache (see [sync.md](./sync.md))
-- [ ] `mono destroy` syncs before deleting environment
-- [ ] Sync skips if cache entry already exists for current lockfile
-- [ ] Cache seeded from project root if artifacts exist with matching lockfile (see [seed.md](./seed.md))
-- [ ] Seeding uses hardlinks (doesn't move root's artifacts)
+
+See [Phase 2a: Sync](./sync.md) and [Phase 2b: Seed](./seed.md) for additional acceptance criteria.
 
 ## Edge Cases
 
@@ -620,10 +677,10 @@ func TestHardlinkTree(t *testing.T) {
 | Interrupted cache store | Partial entry may exist, next init rebuilds |
 | Corrupted cache entry | Build will fail, user runs `mono cache clean` |
 | Project path changes | New project ID, old cache orphaned |
-| Build in progress during sync | Error, user must wait for build to finish |
-| Concurrent syncs (same key) | First wins, second skips |
-| Root has artifacts, same lockfile | Seed cache from root, instant restore |
-| Root has artifacts, different lockfile | Skip seeding, normal build |
+| Cargo fingerprints have wrong paths | Cleaned after restore, Cargo regenerates |
+| node_modules .bin/ has wrong symlinks | Cleaned after restore, `npm rebuild` fixes |
+
+See [Phase 2a: Sync](./sync.md) and [Phase 2b: Seed](./seed.md) for additional edge cases.
 
 ## Performance Expectations
 

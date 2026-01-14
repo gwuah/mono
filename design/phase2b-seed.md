@@ -1,8 +1,12 @@
-# Cache Seeding
+# Phase 2b: Cache Seeding
 
 ## Overview
 
 Seeding populates the cache from existing artifacts in the project root (main branch) before the first build. This avoids redundant builds when the user's main branch already has `target/` or `node_modules/` built.
+
+## Prerequisites
+
+- Phase 2 (core artifact cache) completed
 
 ## Problem
 
@@ -22,6 +26,11 @@ When creating a new worktree via `mono init`:
         ├── Cargo.lock       # same dependencies A, B, C
         └── (no target/)     # cache miss, rebuilds everything
 ```
+
+## Related Documents
+
+- **[phase2-artifact-cache.md](./phase2-artifact-cache.md)** - Core artifact cache implementation
+- **[flaws.md](./flaws.md)** - Analysis of edge cases with hardlink caching
 
 ## Solution
 
@@ -47,6 +56,17 @@ mono init flow:
 4. Check cache again → hit? restore and skip build
 5. Still miss → run build, store to cache
 ```
+
+## Post-Restore Fixes
+
+After seeding populates the cache, the standard restore flow is used (`RestoreFromCache`). This automatically applies post-restore fixes:
+
+- **Cargo**: Cleans `.fingerprint/` directories (absolute paths would cause full rebuilds)
+- **npm/yarn/pnpm**: Cleans `.bin/` directory (symlinks have wrong paths)
+
+These fixes are applied to the **restored environment**, not the cache or root. The cache entry remains intact, and future restores will also get the fixes applied.
+
+See [phase2-artifact-cache.md](./phase2-artifact-cache.md) for the `ApplyPostRestoreFixes` implementation and [flaws.md](./flaws.md) for detailed analysis of why these fixes are needed.
 
 ## Implementation
 
@@ -345,6 +365,24 @@ func (cm *CacheManager) seedToCache(sourcePath, cachePath string) error {
 [mono] root has no cargo artifacts to seed
 [mono] running build script...
 ```
+
+## Files to Modify
+
+| File | Changes |
+|------|---------|
+| `internal/mono/cache.go` | Add `SeedFromRoot`, `seedArtifactFromRoot`, `seedToCache` functions |
+| `internal/mono/operations.go` | Integrate seeding into `Init()` (after cache miss, before build) |
+
+## Acceptance Criteria
+
+- [ ] Cache seeded from project root if artifacts exist with matching lockfile
+- [ ] Seeding uses hardlinks (doesn't move root's artifacts)
+- [ ] Seeding skipped if environment is the root
+- [ ] Seeding skipped if lockfiles differ
+- [ ] Seeding skipped if root has no artifacts
+- [ ] Seeding skipped if root is actively building
+- [ ] Post-restore fixes applied after seed → restore flow
+- [ ] Cross-filesystem fallback to copy
 
 ## Summary
 

@@ -1,41 +1,37 @@
-# Phase 1: Shared Download & Compilation Cache
+# Phase 1: Compilation Cache (sccache)
 
 ## Overview
 
-This phase implements Layer 1 (shared download cache) and Layer 2 (sccache compilation cache). These are low-effort, high-impact changes that require minimal code modifications.
+This phase enables sccache for Rust compilation caching. This is a low-effort, high-impact change that significantly speeds up repeated builds.
 
-**Expected outcome**: Downloads happen once across all environments and projects. Rust compilation artifacts are cached and shared globally.
+**Expected outcome**: Rust compilation artifacts are cached and shared globally. Repeated builds are faster.
 
-## Design Decision: Global Cache in `~/.mono/cache_global/`
+**What about download caches?** Cargo, npm, yarn, and pnpm already cache downloads globally by default (`~/.cargo`, `~/.npm`, etc.). We don't need to configure anything - it just works.
 
-All global caches (Layers 1 & 2) live in `~/.mono/cache_global/`:
+## Design Decision: sccache in `~/.mono/cache_global/`
+
+sccache cache lives in `~/.mono/cache_global/sccache`:
 
 ```
 ~/.mono/
 ├── state.db              # existing
 ├── mono.log              # existing
 ├── data/                 # existing
-└── cache_global/         # Layers 1 & 2: shared across ALL projects
-    ├── cargo/            # Layer 1: shared CARGO_HOME
-    ├── npm/              # Layer 1: shared npm cache
-    ├── yarn/             # Layer 1: shared yarn cache
-    ├── pnpm/             # Layer 1: shared pnpm home
-    └── sccache/          # Layer 2: compilation cache
+├── cache_global/
+│   └── sccache/          # compilation cache
+└── cache_local/          # Phase 2: per-project artifact cache
 ```
 
-**Benefits:**
-- No `.gitignore` management needed
-- Transparent to users (invisible in project directory)
-- Consistent with existing mono state location
-- Cache shared across all projects (download caches are inherently shareable)
-- Survives project deletion
+**Why configure sccache but not CARGO_HOME/npm?**
+- Download caches already work globally by default
+- Changing CARGO_HOME breaks access to user's `cargo install`ed binaries
+- sccache is not enabled by default - we add value by enabling it
 
 ## Files to Modify
 
 | File | Changes |
 |------|---------|
 | `internal/mono/config.go` | Add `Build` config section |
-| `internal/mono/env.go` | Add cache env vars to `ToEnvSlice()` |
 | `internal/mono/operations.go` | Initialize cache and inject env vars in `Init()` |
 | `internal/mono/cache.go` | **New file** - Cache utilities |
 
@@ -45,29 +41,14 @@ All global caches (Layers 1 & 2) live in `~/.mono/cache_global/`:
 
 **File**: `internal/mono/config.go`
 
-Add a new `Build` section to the Config struct:
-
 ```go
 type BuildConfig struct {
-    Strategy      string `yaml:"strategy"`       // layered|compile|download|none
-    DownloadCache bool   `yaml:"download_cache"` // default: true
-    Sccache       *bool  `yaml:"sccache"`        // default: auto-detect
+    Sccache *bool `yaml:"sccache"` // default: auto-detect
 }
 
 type Config struct {
     Scripts ScriptsConfig `yaml:"scripts"`
     Build   BuildConfig   `yaml:"build"`
-}
-```
-
-Add a method to apply defaults:
-
-```go
-func (c *Config) ApplyDefaults() {
-    if c.Build.Strategy == "" {
-        c.Build.Strategy = "layered"
-    }
-    c.Build.DownloadCache = true
 }
 ```
 
@@ -87,10 +68,7 @@ import (
 type CacheManager struct {
     HomeDir          string
     GlobalCacheDir   string
-    CargoHome        string
-    NpmCache         string
-    YarnCache        string
-    PnpmHome         string
+    LocalCacheDir    string
     SccacheDir       string
     SccacheAvailable bool
 }
@@ -102,14 +80,12 @@ func NewCacheManager() (*CacheManager, error) {
     }
 
     globalCacheDir := filepath.Join(homeDir, "cache_global")
+    localCacheDir := filepath.Join(homeDir, "cache_local")
 
     cm := &CacheManager{
         HomeDir:        homeDir,
         GlobalCacheDir: globalCacheDir,
-        CargoHome:      filepath.Join(globalCacheDir, "cargo"),
-        NpmCache:       filepath.Join(globalCacheDir, "npm"),
-        YarnCache:      filepath.Join(globalCacheDir, "yarn"),
-        PnpmHome:       filepath.Join(globalCacheDir, "pnpm"),
+        LocalCacheDir:  localCacheDir,
         SccacheDir:     filepath.Join(globalCacheDir, "sccache"),
     }
 
@@ -132,41 +108,18 @@ func (cm *CacheManager) detectSccache() bool {
 }
 
 func (cm *CacheManager) EnsureDirectories() error {
-    dirs := []string{
-        cm.CargoHome,
-        cm.NpmCache,
-        cm.YarnCache,
-        cm.PnpmHome,
-    }
-
-    for _, dir := range dirs {
-        if err := os.MkdirAll(dir, 0755); err != nil {
-            return err
-        }
-    }
-
     if cm.SccacheAvailable {
         if err := os.MkdirAll(cm.SccacheDir, 0755); err != nil {
             return err
         }
     }
-
     return nil
 }
 
 func (cm *CacheManager) EnvVars(cfg BuildConfig) []string {
-    if cfg.Strategy == "none" {
-        return nil
-    }
+    var vars []string
 
-    vars := []string{
-        "CARGO_HOME=" + cm.CargoHome,
-        "npm_config_cache=" + cm.NpmCache,
-        "YARN_CACHE_FOLDER=" + cm.YarnCache,
-        "PNPM_HOME=" + cm.PnpmHome,
-    }
-
-    if cfg.Strategy != "download" && cm.shouldEnableSccache(cfg) {
+    if cm.shouldEnableSccache(cfg) {
         vars = append(vars,
             "RUSTC_WRAPPER=sccache",
             "SCCACHE_DIR="+cm.SccacheDir,
@@ -248,14 +201,11 @@ func runScript(script string, env MonoEnv, extraEnvVars []string, logger *EnvLog
 
 ### Manual Test Plan
 
-1. **Create first environment**
+1. **Create environment with sccache**
    ```bash
    mono init ./env1
    # Should see: "sccache detected, compilation caching enabled"
-   # Verify directories: ls ~/.mono/cache_global/
-   #   - cargo/
-   #   - npm/
-   #   - sccache/
+   # Verify directory: ls ~/.mono/cache_global/sccache/
    ```
 
 2. **Verify env vars are set**
@@ -263,31 +213,30 @@ func runScript(script string, env MonoEnv, extraEnvVars []string, logger *EnvLog
    # In mono.yml:
    scripts:
      init: |
-       echo "CARGO_HOME=$CARGO_HOME"
-       echo "npm_config_cache=$npm_config_cache"
        echo "RUSTC_WRAPPER=$RUSTC_WRAPPER"
+       echo "SCCACHE_DIR=$SCCACHE_DIR"
    ```
    ```bash
    mono init ./test-env
-   # Output should show paths like:
-   # CARGO_HOME=/Users/you/.mono/cache_global/cargo
-   # npm_config_cache=/Users/you/.mono/cache_global/npm
+   # Output should show:
    # RUSTC_WRAPPER=sccache
+   # SCCACHE_DIR=/Users/you/.mono/cache_global/sccache
    ```
 
-3. **Create second environment, verify cache reuse**
+3. **Verify sccache works**
+   ```bash
+   mono init ./env1
+   cd env1 && cargo build
+   sccache -s  # check stats, should show cache misses
+   cargo clean && cargo build
+   sccache -s  # should show cache hits
+   ```
+
+4. **Cross-environment cache sharing**
    ```bash
    mono init ./env2
-   # ~/.mono/cache_global/cargo/registry should already contain downloaded crates
-   # sccache should show cache hits
-   sccache -s  # check stats
-   ```
-
-4. **Cross-project cache sharing**
-   ```bash
-   cd ~/other-project
-   mono init ./env1
-   # Should reuse crates already downloaded from first project
+   cd env2 && cargo build
+   sccache -s  # should show cache hits from env1's build
    ```
 
 5. **Test without sccache**
@@ -299,39 +248,48 @@ func runScript(script string, env MonoEnv, extraEnvVars []string, logger *EnvLog
    sudo mv /usr/local/bin/sccache.bak /usr/local/bin/sccache
    ```
 
-6. **Test strategy=none**
+6. **Disable sccache via config**
    ```yaml
    # mono.yml
    build:
-     strategy: none
+     sccache: false
    ```
    ```bash
    mono init ./env4
-   # Should NOT inject CARGO_HOME or other cache vars
+   # Should NOT set RUSTC_WRAPPER
+   ```
+
+7. **Verify download caches work by default**
+   ```bash
+   # No mono config needed - these just work
+   mono init ./env1
+   cd env1 && cargo build  # downloads crates to ~/.cargo
+   mono init ./env2
+   cd env2 && cargo build  # reuses crates from ~/.cargo (no re-download)
    ```
 
 ## Acceptance Criteria
 
-- [ ] `~/.mono/cache_global/cargo`, `~/.mono/cache_global/npm`, etc. directories created on first `mono init`
-- [ ] `CARGO_HOME`, `npm_config_cache`, `YARN_CACHE_FOLDER`, `PNPM_HOME` injected into scripts
-- [ ] sccache auto-detected and `RUSTC_WRAPPER`, `SCCACHE_DIR` set when available
-- [ ] Cache disabled when `build.strategy: none` in config
-- [ ] Second environment creation reuses downloaded dependencies
-- [ ] Cache shared across different projects
+- [ ] `~/.mono/cache_global/sccache` directory created when sccache available
+- [ ] `RUSTC_WRAPPER=sccache` and `SCCACHE_DIR` injected into scripts when sccache available
+- [ ] sccache auto-detected via `exec.LookPath`
+- [ ] sccache can be disabled via `build.sccache: false` in config
 - [ ] `sccache -s` shows cache hits for repeated builds
-- [ ] No `.gitignore` changes required in projects
+- [ ] Cache shared across environments and projects
+- [ ] Helpful hint shown when sccache not installed
+- [ ] Download caches (cargo, npm) work by default without any mono configuration
 
 ## Rollback Plan
 
-If issues arise, the cache can be disabled per-project with:
+If issues arise, sccache can be disabled per-project:
 
 ```yaml
 build:
-  strategy: none
+  sccache: false
 ```
 
-Or globally by removing the cache directories:
+Or globally by removing the cache directory:
 
 ```bash
-rm -rf ~/.mono/cache_global
+rm -rf ~/.mono/cache_global/sccache
 ```

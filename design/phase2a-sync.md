@@ -1,8 +1,17 @@
-# Cache Sync
+# Phase 2a: Cache Sync
 
 ## Overview
 
 Sync ensures the current state of build artifacts (`target/`, `node_modules/`) is stored in the cache. This captures work done after initial environment creation, such as adding new dependencies.
+
+## Prerequisites
+
+- Phase 2 (core artifact cache) completed
+
+## Related Documents
+
+- **[phase2-artifact-cache.md](./phase2-artifact-cache.md)** - Core artifact cache implementation
+- **[flaws.md](./flaws.md)** - Analysis of edge cases including concurrent sync race conditions
 
 ## When Sync Runs
 
@@ -43,6 +52,35 @@ type SyncOptions struct {
 **File**: `internal/mono/cache.go`
 
 ```go
+import "syscall"
+
+func (cm *CacheManager) acquireCacheLock(cachePath string) (*os.File, error) {
+    lockPath := cachePath + ".lock"
+
+    if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
+        return nil, err
+    }
+
+    f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+    if err != nil {
+        return nil, err
+    }
+
+    if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+        f.Close()
+        return nil, nil
+    }
+
+    return f, nil
+}
+
+func (cm *CacheManager) releaseCacheLock(f *os.File) {
+    if f != nil {
+        syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+        f.Close()
+    }
+}
+
 func (cm *CacheManager) Sync(artifacts []ArtifactConfig, rootPath, envPath string, opts SyncOptions) error {
     for _, artifact := range artifacts {
         if err := cm.syncArtifact(artifact, rootPath, envPath, opts); err != nil {
@@ -80,11 +118,24 @@ func (cm *CacheManager) syncArtifact(artifact ArtifactConfig, rootPath, envPath 
 }
 
 func (cm *CacheManager) moveToCache(localPath, cachePath string, hardlinkBack bool) error {
+    lock, err := cm.acquireCacheLock(cachePath)
+    if err != nil {
+        return err
+    }
+    if lock == nil {
+        return nil
+    }
+    defer cm.releaseCacheLock(lock)
+
+    targetInCache := filepath.Join(cachePath, filepath.Base(localPath))
+
+    if dirExists(targetInCache) {
+        return nil
+    }
+
     if err := os.MkdirAll(cachePath, 0755); err != nil {
         return err
     }
-
-    targetInCache := filepath.Join(cachePath, filepath.Base(localPath))
 
     if err := os.Rename(localPath, targetInCache); err != nil {
         if isCrossDevice(err) {
@@ -218,24 +269,58 @@ if !dirExists(localPath) {
 
 ### 6. Concurrent syncs
 
-**Risk**: Two environments with same lockfile syncing simultaneously, both try to create same cache entry.
+**Risk**: Two environments with same lockfile syncing simultaneously, both try to create same cache entry. The check-then-move operation is not atomic.
 
-**Mitigation**: Use atomic directory creation. First one wins, second detects and skips.
+**Mitigation**: Use file locking per cache key. First process acquires lock and proceeds, second process sees lock and skips. See [flaws.md](./flaws.md) for detailed analysis.
 
 ```go
-func (cm *CacheManager) moveToCache(localPath, cachePath string, hardlinkBack bool) error {
-    targetInCache := filepath.Join(cachePath, filepath.Base(localPath))
+import "syscall"
 
-    // Atomic check-and-create using mkdir
-    if err := os.MkdirAll(cachePath, 0755); err != nil {
-        return err
+func (cm *CacheManager) acquireCacheLock(cachePath string) (*os.File, error) {
+    lockPath := cachePath + ".lock"
+
+    if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
+        return nil, err
     }
 
-    // Check again after mkdir (another process might have created it)
-    if dirExists(targetInCache) {
-        // Another sync won the race, we can skip
-        // Optionally: remove local and hardlink from existing cache
+    f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+    if err != nil {
+        return nil, err
+    }
+
+    if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+        f.Close()
+        return nil, nil
+    }
+
+    return f, nil
+}
+
+func (cm *CacheManager) releaseCacheLock(f *os.File) {
+    if f != nil {
+        syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+        f.Close()
+    }
+}
+
+func (cm *CacheManager) moveToCache(localPath, cachePath string, hardlinkBack bool) error {
+    lock, err := cm.acquireCacheLock(cachePath)
+    if err != nil {
+        return err
+    }
+    if lock == nil {
         return nil
+    }
+    defer cm.releaseCacheLock(lock)
+
+    targetInCache := filepath.Join(cachePath, filepath.Base(localPath))
+
+    if dirExists(targetInCache) {
+        return nil
+    }
+
+    if err := os.MkdirAll(cachePath, 0755); err != nil {
+        return err
     }
 
     // ... proceed with rename
@@ -368,6 +453,25 @@ func newSyncCmd() *cobra.Command {
    cd env1 && cargo build
    # Should work, not rebuild everything
    ```
+
+## Files to Modify
+
+| File | Changes |
+|------|---------|
+| `internal/mono/cache.go` | Add `Sync`, `syncArtifact`, `moveToCache`, lock functions |
+| `internal/mono/operations.go` | Integrate sync into `Destroy()` |
+| `internal/cli/sync.go` | **New file** - `mono sync` CLI command |
+| `internal/cli/root.go` | Register sync command |
+
+## Acceptance Criteria
+
+- [ ] `mono sync <path>` syncs current artifacts to cache
+- [ ] `mono destroy` syncs before deleting environment
+- [ ] Sync skips if cache entry already exists for current lockfile
+- [ ] File locking prevents concurrent sync race conditions
+- [ ] Environment continues working after sync (hardlink back)
+- [ ] Build-in-progress detection prevents corrupted cache entries
+- [ ] Cross-filesystem fallback to copy
 
 ## Summary
 
