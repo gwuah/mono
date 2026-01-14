@@ -11,12 +11,14 @@ conductor.json:
 ```json
 {
   "scripts": {
-    "setup": "mono init \"$CONDUCTOR_ROOT_PATH\"",
-    "run": "mono run \"$CONDUCTOR_ROOT_PATH\"",
-    "archive": "mono destroy \"$CONDUCTOR_ROOT_PATH\""
+    "setup": "mono init",
+    "run": "mono run",
+    "archive": "mono destroy"
   }
 }
 ```
+
+Mono automatically reads `CONDUCTOR_WORKSPACE_PATH` when no path is provided. You can also pass an explicit path: `mono init /path/to/workspace`.
 
 ## Architecture
 

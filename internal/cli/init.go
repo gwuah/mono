@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/gwuah/mono/internal/mono"
 	"github.com/spf13/cobra"
@@ -11,16 +10,14 @@ import (
 
 func NewInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "init <path>",
+		Use:   "init [path]",
 		Short: "Initialize a new environment",
-		Long:  "Register an environment, start containers, and create a tmux session.",
-		Args:  cobra.ExactArgs(1),
+		Long:  "Register an environment, start containers, and create a tmux session.\nIf no path is provided, uses CONDUCTOR_WORKSPACE_PATH.",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			path := args[0]
-
-			absPath, err := filepath.Abs(path)
+			absPath, err := resolvePath(args)
 			if err != nil {
-				return fmt.Errorf("invalid path: %w", err)
+				return err
 			}
 
 			if _, err := os.Stat(absPath); err != nil {

@@ -1,25 +1,20 @@
 package cli
 
 import (
-	"fmt"
-	"path/filepath"
-
 	"github.com/gwuah/mono/internal/mono"
 	"github.com/spf13/cobra"
 )
 
 func NewDestroyCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "destroy <path>",
+		Use:   "destroy [path]",
 		Short: "Destroy an environment",
-		Long:  "Stop containers, kill tmux session, and clean up data.",
-		Args:  cobra.ExactArgs(1),
+		Long:  "Stop containers, kill tmux session, and clean up data.\nIf no path is provided, uses CONDUCTOR_WORKSPACE_PATH.",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			path := args[0]
-
-			absPath, err := filepath.Abs(path)
+			absPath, err := resolvePath(args)
 			if err != nil {
-				return fmt.Errorf("invalid path: %w", err)
+				return err
 			}
 
 			return mono.Destroy(absPath)
