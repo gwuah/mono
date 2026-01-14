@@ -166,3 +166,21 @@ func (db *DB) DeleteAllCacheEvents() error {
 	_, err := db.conn.Exec(`DELETE FROM cache_events`)
 	return err
 }
+
+func (db *DB) GetAllRootPaths() ([]string, error) {
+	rows, err := db.conn.Query(`SELECT DISTINCT root_path FROM environments WHERE root_path IS NOT NULL AND root_path != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var paths []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		paths = append(paths, path)
+	}
+	return paths, rows.Err()
+}

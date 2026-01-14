@@ -55,14 +55,21 @@ func newCacheStatsCmd() *cobra.Command {
 				return err
 			}
 
+			rootPaths, err := db.GetAllRootPaths()
+			if err != nil {
+				return err
+			}
+
+			projectNames := buildProjectNameMap(rootPaths)
+
 			statsMap := make(map[string]mono.CacheEntry)
 			for _, s := range stats {
 				key := s.ProjectID + "/" + s.Artifact + "/" + s.CacheKey
 				statsMap[key] = s
 			}
 
-			fmt.Printf("%-14s %-10s %-12s %6s %8s   %s\n", "Project", "Artifact", "Key", "Hits", "Size", "Last Used")
-			fmt.Println(strings.Repeat("─", 75))
+			fmt.Printf("%-20s %-10s %-12s %6s %8s   %s\n", "Project", "Artifact", "Key", "Hits", "Size", "Last Used")
+			fmt.Println(strings.Repeat("─", 80))
 
 			var totalSize int64
 			for _, entry := range sizes {
@@ -76,8 +83,13 @@ func newCacheStatsCmd() *cobra.Command {
 					lastUsed = formatTimeAgo(s.LastUsed)
 				}
 
-				fmt.Printf("%-14s %-10s %-12s %6d %8s   %s\n",
-					entry.ProjectID,
+				projectName := entry.ProjectID
+				if name, ok := projectNames[entry.ProjectID]; ok {
+					projectName = name
+				}
+
+				fmt.Printf("%-20s %-10s %-12s %6d %8s   %s\n",
+					projectName,
 					entry.Artifact,
 					entry.CacheKey,
 					hits,
@@ -86,12 +98,32 @@ func newCacheStatsCmd() *cobra.Command {
 				)
 			}
 
-			fmt.Println(strings.Repeat("─", 75))
+			fmt.Println(strings.Repeat("─", 80))
 			fmt.Printf("Total: %d entries, %s\n", len(sizes), formatSize(totalSize))
 
 			return nil
 		},
 	}
+}
+
+func buildProjectNameMap(rootPaths []string) map[string]string {
+	nameMap := make(map[string]string)
+	for _, rootPath := range rootPaths {
+		projectID := mono.ComputeProjectID(rootPath)
+		nameMap[projectID] = formatProjectName(rootPath)
+	}
+	return nameMap
+}
+
+func formatProjectName(rootPath string) string {
+	parts := strings.Split(rootPath, string(os.PathSeparator))
+	if len(parts) >= 2 {
+		return parts[len(parts)-2] + "/" + parts[len(parts)-1]
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return rootPath
 }
 
 func newCacheCleanCmd() *cobra.Command {
