@@ -25,11 +25,11 @@ CREATE TABLE IF NOT EXISTS cache_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
     event TEXT NOT NULL,
-    project_id TEXT NOT NULL,
+    project_name TEXT NOT NULL,
     artifact TEXT NOT NULL,
     cache_key TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_cache_events_key ON cache_events(project_id, artifact, cache_key);
+CREATE INDEX IF NOT EXISTS idx_cache_events_key ON cache_events(project_name, artifact, cache_key);
 `
 
 type DB struct {
@@ -99,37 +99,39 @@ func (db *DB) Initialize() error {
 		return fmt.Errorf("failed to create cache_events schema: %w", err)
 	}
 
+	db.conn.Exec(`ALTER TABLE cache_events RENAME COLUMN project_id TO project_name`)
+
 	return nil
 }
 
-func (db *DB) RecordCacheEvent(event, projectID, artifact, cacheKey string) error {
+func (db *DB) RecordCacheEvent(event, projectName, artifact, cacheKey string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO cache_events (event, project_id, artifact, cache_key) VALUES (?, ?, ?, ?)`,
-		event, projectID, artifact, cacheKey,
+		`INSERT INTO cache_events (event, project_name, artifact, cache_key) VALUES (?, ?, ?, ?)`,
+		event, projectName, artifact, cacheKey,
 	)
 	return err
 }
 
 type CacheEntry struct {
-	ProjectID string
-	Artifact  string
-	CacheKey  string
-	Hits      int
-	Misses    int
-	LastUsed  time.Time
+	ProjectName string
+	Artifact    string
+	CacheKey    string
+	Hits        int
+	Misses      int
+	LastUsed    time.Time
 }
 
 func (db *DB) GetCacheStats() ([]CacheEntry, error) {
 	rows, err := db.conn.Query(`
 		SELECT
-			project_id,
+			project_name,
 			artifact,
 			cache_key,
 			SUM(CASE WHEN event = 'hit' THEN 1 ELSE 0 END) as hits,
 			SUM(CASE WHEN event = 'miss' THEN 1 ELSE 0 END) as misses,
 			MAX(timestamp) as last_used
 		FROM cache_events
-		GROUP BY project_id, artifact, cache_key
+		GROUP BY project_name, artifact, cache_key
 		ORDER BY last_used DESC
 	`)
 	if err != nil {
@@ -141,7 +143,7 @@ func (db *DB) GetCacheStats() ([]CacheEntry, error) {
 	for rows.Next() {
 		var e CacheEntry
 		var lastUsedStr string
-		if err := rows.Scan(&e.ProjectID, &e.Artifact, &e.CacheKey, &e.Hits, &e.Misses, &lastUsedStr); err != nil {
+		if err := rows.Scan(&e.ProjectName, &e.Artifact, &e.CacheKey, &e.Hits, &e.Misses, &lastUsedStr); err != nil {
 			return nil, err
 		}
 		lastUsed, err := time.Parse("2006-01-02 15:04:05", lastUsedStr)
@@ -154,10 +156,10 @@ func (db *DB) GetCacheStats() ([]CacheEntry, error) {
 	return entries, rows.Err()
 }
 
-func (db *DB) DeleteCacheEvents(projectID, artifact, cacheKey string) error {
+func (db *DB) DeleteCacheEvents(projectName, artifact, cacheKey string) error {
 	_, err := db.conn.Exec(
-		`DELETE FROM cache_events WHERE project_id = ? AND artifact = ? AND cache_key = ?`,
-		projectID, artifact, cacheKey,
+		`DELETE FROM cache_events WHERE project_name = ? AND artifact = ? AND cache_key = ?`,
+		projectName, artifact, cacheKey,
 	)
 	return err
 }

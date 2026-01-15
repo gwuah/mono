@@ -55,16 +55,9 @@ func newCacheStatsCmd() *cobra.Command {
 				return err
 			}
 
-			rootPaths, err := db.GetAllRootPaths()
-			if err != nil {
-				return err
-			}
-
-			projectNames := buildProjectNameMap(rootPaths)
-
 			statsMap := make(map[string]mono.CacheEntry)
 			for _, s := range stats {
-				key := s.ProjectID + "/" + s.Artifact + "/" + s.CacheKey
+				key := s.ProjectName + "/" + s.Artifact + "/" + s.CacheKey
 				statsMap[key] = s
 			}
 
@@ -74,7 +67,7 @@ func newCacheStatsCmd() *cobra.Command {
 			var totalSize int64
 			for _, entry := range sizes {
 				totalSize += entry.Size
-				key := entry.ProjectID + "/" + entry.Artifact + "/" + entry.CacheKey
+				key := entry.ProjectName + "/" + entry.Artifact + "/" + entry.CacheKey
 
 				hits := 0
 				lastUsed := "never"
@@ -83,13 +76,8 @@ func newCacheStatsCmd() *cobra.Command {
 					lastUsed = formatTimeAgo(s.LastUsed)
 				}
 
-				projectName := entry.ProjectID
-				if name, ok := projectNames[entry.ProjectID]; ok {
-					projectName = name
-				}
-
 				fmt.Printf("%-20s %-10s %-12s %6d %8s   %s\n",
-					projectName,
+					entry.ProjectName,
 					entry.Artifact,
 					entry.CacheKey,
 					hits,
@@ -106,32 +94,11 @@ func newCacheStatsCmd() *cobra.Command {
 	}
 }
 
-func buildProjectNameMap(rootPaths []string) map[string]string {
-	nameMap := make(map[string]string)
-	for _, rootPath := range rootPaths {
-		projectID := mono.ComputeProjectID(rootPath)
-		nameMap[projectID] = formatProjectName(rootPath)
-	}
-	return nameMap
-}
-
-func formatProjectName(rootPath string) string {
-	parts := strings.Split(rootPath, string(os.PathSeparator))
-	if len(parts) >= 2 {
-		return parts[len(parts)-2] + "/" + parts[len(parts)-1]
-	}
-	if len(parts) == 1 {
-		return parts[0]
-	}
-	return rootPath
-}
-
 type cacheDisplayEntry struct {
-	entry       mono.CacheSizeEntry
-	projectName string
-	hits        int
-	lastUsed    string
-	label       string
+	entry    mono.CacheSizeEntry
+	hits     int
+	lastUsed string
+	label    string
 }
 
 func newCacheCleanCmd() *cobra.Command {
@@ -187,30 +154,15 @@ func newCacheCleanCmd() *cobra.Command {
 				return err
 			}
 
-			rootPaths, err := db.GetAllRootPaths()
-			if err != nil {
-				return err
-			}
-
-			projectNames := buildProjectNameMap(rootPaths)
-
 			statsMap := make(map[string]mono.CacheEntry)
 			for _, s := range stats {
-				key := s.ProjectID + "/" + s.Artifact + "/" + s.CacheKey
+				key := s.ProjectName + "/" + s.Artifact + "/" + s.CacheKey
 				statsMap[key] = s
 			}
 
 			var displayEntries []cacheDisplayEntry
 			for _, entry := range sizes {
-				key := entry.ProjectID + "/" + entry.Artifact + "/" + entry.CacheKey
-
-				projectName := entry.ProjectID
-				if len(projectName) > 12 {
-					projectName = projectName[:12]
-				}
-				if name, ok := projectNames[entry.ProjectID]; ok {
-					projectName = name
-				}
+				key := entry.ProjectName + "/" + entry.Artifact + "/" + entry.CacheKey
 
 				hits := 0
 				lastUsed := "never"
@@ -220,18 +172,17 @@ func newCacheCleanCmd() *cobra.Command {
 				}
 
 				label := fmt.Sprintf("%-20s  %8s   %3d hits   %s",
-					projectName+"/"+entry.Artifact,
+					entry.ProjectName+"/"+entry.Artifact,
 					formatSize(entry.Size),
 					hits,
 					lastUsed,
 				)
 
 				displayEntries = append(displayEntries, cacheDisplayEntry{
-					entry:       entry,
-					projectName: projectName,
-					hits:        hits,
-					lastUsed:    lastUsed,
-					label:       label,
+					entry:    entry,
+					hits:     hits,
+					lastUsed: lastUsed,
+					label:    label,
 				})
 			}
 
@@ -247,10 +198,10 @@ func newCacheCleanCmd() *cobra.Command {
 
 			var totalRemoved int64
 			for _, entry := range selected {
-				if err := cm.RemoveCacheEntry(entry.ProjectID, entry.Artifact, entry.CacheKey); err != nil {
-					return fmt.Errorf("failed to remove %s/%s: %w", entry.ProjectID, entry.Artifact, err)
+				if err := cm.RemoveCacheEntry(entry.ProjectName, entry.Artifact, entry.CacheKey); err != nil {
+					return fmt.Errorf("failed to remove %s/%s: %w", entry.ProjectName, entry.Artifact, err)
 				}
-				if err := db.DeleteCacheEvents(entry.ProjectID, entry.Artifact, entry.CacheKey); err != nil {
+				if err := db.DeleteCacheEvents(entry.ProjectName, entry.Artifact, entry.CacheKey); err != nil {
 					return fmt.Errorf("failed to delete cache events: %w", err)
 				}
 				totalRemoved += entry.Size

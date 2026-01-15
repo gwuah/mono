@@ -8,21 +8,25 @@ import (
 	"testing"
 )
 
-func TestComputeProjectID(t *testing.T) {
-	id1 := ComputeProjectID("/Users/x/project1")
-	id2 := ComputeProjectID("/Users/x/project1")
-	id3 := ComputeProjectID("/Users/x/project2")
+func TestGetProjectName(t *testing.T) {
+	name1 := GetProjectName("/Users/x/project1")
+	name2 := GetProjectName("/Users/x/project1")
+	name3 := GetProjectName("/Users/x/project2")
 
-	if id1 != id2 {
-		t.Errorf("same path should produce same ID: got %s and %s", id1, id2)
+	if name1 != name2 {
+		t.Errorf("same path should produce same name: got %s and %s", name1, name2)
 	}
 
-	if id1 == id3 {
-		t.Errorf("different paths should produce different IDs: both got %s", id1)
+	if name1 == name3 {
+		t.Errorf("different paths should produce different names: both got %s", name1)
 	}
 
-	if len(id1) != 12 {
-		t.Errorf("project ID should be 12 chars, got %d: %s", len(id1), id1)
+	if name1 != "project1" {
+		t.Errorf("expected project name 'project1', got %s", name1)
+	}
+
+	if name3 != "project2" {
+		t.Errorf("expected project name 'project2', got %s", name3)
 	}
 }
 
@@ -761,6 +765,8 @@ func TestSeedFromRoot(t *testing.T) {
 		t.Fatalf("failed to create cache manager: %v", err)
 	}
 
+	os.RemoveAll(filepath.Join(cm.LocalCacheDir, "root"))
+
 	testDir := t.TempDir()
 	rootPath := filepath.Join(testDir, "root")
 	envPath := filepath.Join(testDir, "env")
@@ -927,6 +933,8 @@ func TestSeedSkipsNoRootArtifacts(t *testing.T) {
 		t.Fatalf("failed to create cache manager: %v", err)
 	}
 
+	os.RemoveAll(filepath.Join(cm.LocalCacheDir, "root"))
+
 	testDir := t.TempDir()
 	rootPath := filepath.Join(testDir, "root")
 	envPath := filepath.Join(testDir, "env")
@@ -973,6 +981,8 @@ func TestSeedSkipsBuildInProgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create cache manager: %v", err)
 	}
+
+	os.RemoveAll(filepath.Join(cm.LocalCacheDir, "root"))
 
 	testDir := t.TempDir()
 	rootPath := filepath.Join(testDir, "root")
@@ -1094,6 +1104,8 @@ func TestSeedThenRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create cache manager: %v", err)
 	}
+
+	os.RemoveAll(filepath.Join(cm.LocalCacheDir, "root"))
 
 	testDir := t.TempDir()
 	rootPath := filepath.Join(testDir, "root")

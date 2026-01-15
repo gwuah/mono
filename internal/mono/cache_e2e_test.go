@@ -531,8 +531,8 @@ func cleanupTestEnvironment(t *testing.T, monoBin, envPath, testDir string) {
 		projectCacheDir := filepath.Join(cacheDir, entry.Name())
 		info, err := os.Stat(projectCacheDir)
 		if err == nil && info.IsDir() {
-			expectedProjectID := ComputeProjectID(testDir)
-			if entry.Name() == expectedProjectID {
+			expectedProjectName := GetProjectName(testDir)
+			if entry.Name() == expectedProjectName {
 				os.RemoveAll(projectCacheDir)
 			}
 		}
