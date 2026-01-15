@@ -157,7 +157,8 @@ func Init(path string) error {
 	cacheEnvVars = append(cacheEnvVars, fmt.Sprintf("MONO_CACHE_HIT=%t", allHit))
 	cacheEnvVars = append(cacheEnvVars, "MONO_CACHE_DIR="+cm.LocalCacheDir)
 
-	_, composeErr := DetectComposeFile(path)
+	composeDir := cfg.ResolveComposeDir(path)
+	_, composeErr := DetectComposeFile(composeDir)
 	isSimpleMode := composeErr != nil
 
 	dockerProject := ""
@@ -165,7 +166,7 @@ func Init(path string) error {
 		dockerProject = fmt.Sprintf("mono-%s", envName)
 	}
 
-	envID, err := db.InsertEnvironment(path, dockerProject, rootPath)
+	envID, err := db.InsertEnvironment(path, dockerProject, rootPath, cfg.ComposeDir)
 	if err != nil {
 		cleanup()
 		return fmt.Errorf("failed to save environment: %w", err)
@@ -207,7 +208,7 @@ func Init(path string) error {
 			return err
 		}
 
-		composeConfig, err := ParseComposeConfig(path)
+		composeConfig, err := ParseComposeConfig(composeDir)
 		if err != nil {
 			cleanupWithDB()
 			return fmt.Errorf("failed to parse compose config: %w", err)
@@ -219,7 +220,7 @@ func Init(path string) error {
 		composeProject := composeConfig.Project()
 		ApplyOverrides(composeProject, envName, allocations)
 
-		monoComposePath := filepath.Join(path, "docker-compose.mono.yml")
+		monoComposePath := filepath.Join(composeDir, "docker-compose.mono.yml")
 		if err := WriteComposeOverride(monoComposePath, composeProject); err != nil {
 			cleanupWithDB()
 			return fmt.Errorf("failed to write compose override: %w", err)
@@ -229,7 +230,7 @@ func Init(path string) error {
 		logger.Log("running: docker compose -p %s up -d", dockerProject)
 		stdout := NewLogWriter(logger, "out")
 		stderr := NewLogWriter(logger, "err")
-		if err := StartContainers(dockerProject, path, stdout, stderr); err != nil {
+		if err := StartContainers(dockerProject, composeDir, stdout, stderr); err != nil {
 			cleanupWithDB()
 			return fmt.Errorf("failed to start containers: %w", err)
 		}
@@ -241,7 +242,7 @@ func Init(path string) error {
 		logger.Log("running setup script: %s", cfg.Scripts.Setup)
 		if err := runScript(path, cfg.Scripts.Setup, scriptEnv, logger); err != nil {
 			if !isSimpleMode {
-				StopContainers(dockerProject, path, true, nil, nil)
+				StopContainers(dockerProject, composeDir, true, nil, nil)
 			}
 			cleanupWithDB()
 			return fmt.Errorf("setup script failed: %w", err)
@@ -297,6 +298,11 @@ func Destroy(path string) error {
 		return fmt.Errorf("environment not found: %s", path)
 	}
 
+	composeDir := path
+	if env.ComposeDir.Valid && env.ComposeDir.String != "" {
+		composeDir = filepath.Join(path, env.ComposeDir.String)
+	}
+
 	cfg, _ := LoadConfig(path)
 
 	rootPath := ""
@@ -350,7 +356,7 @@ func Destroy(path string) error {
 		logger.Log("stopping containers: %s", env.DockerProject.String)
 		stdout := NewLogWriter(logger, "out")
 		stderr := NewLogWriter(logger, "err")
-		if err := StopContainers(env.DockerProject.String, path, true, stdout, stderr); err != nil {
+		if err := StopContainers(env.DockerProject.String, composeDir, true, stdout, stderr); err != nil {
 			logger.Log("warning: failed to stop containers: %v", err)
 		} else {
 			logger.Log("stopped containers")
@@ -601,7 +607,7 @@ func buildScriptEnv(envName string, envID int64, envPath, rootPath string, alloc
 	return result
 }
 
-func runScript(workDir, script string, envVars []string, extraEnvVars []string, logger *FileLogger) error {
+func runScript(workDir, script string, envVars []string, logger *FileLogger) error {
 	stdout := NewLogWriter(logger, "out")
 	stderr := NewLogWriter(logger, "err")
 

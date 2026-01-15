@@ -99,6 +99,7 @@ func (db *DB) Initialize() error {
 	}
 
 	db.conn.Exec(`ALTER TABLE environments ADD COLUMN root_path TEXT`)
+	db.conn.Exec(`ALTER TABLE environments ADD COLUMN compose_dir TEXT`)
 
 	_, err = db.conn.Exec(cacheEventsSchema)
 	if err != nil {
