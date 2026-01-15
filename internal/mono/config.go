@@ -23,9 +23,10 @@ type BuildConfig struct {
 }
 
 type Config struct {
-	Scripts Scripts           `yaml:"scripts"`
-	Build   BuildConfig       `yaml:"build"`
-	Env     map[string]string `yaml:"env"`
+	Scripts    Scripts           `yaml:"scripts"`
+	Build      BuildConfig       `yaml:"build"`
+	Env        map[string]string `yaml:"env"`
+	ComposeDir string            `yaml:"compose_dir"`
 }
 
 type Scripts struct {
@@ -58,6 +59,13 @@ func (c *Config) ApplyDefaults(envPath string) {
 	if len(c.Build.Artifacts) == 0 {
 		c.Build.Artifacts = detectArtifacts(envPath)
 	}
+}
+
+func (c *Config) ResolveComposeDir(basePath string) string {
+	if c.ComposeDir == "" {
+		return basePath
+	}
+	return filepath.Join(basePath, c.ComposeDir)
 }
 
 type lockFileSpec struct {
