@@ -106,6 +106,8 @@ func (db *DB) Initialize() error {
 		return fmt.Errorf("failed to create cache_events schema: %w", err)
 	}
 
+	db.conn.Exec(`ALTER TABLE cache_events ADD COLUMN project_id TEXT NOT NULL DEFAULT ''`)
+
 	return nil
 }
 
