@@ -96,6 +96,9 @@ download_binary() {
     mkdir -p "$INSTALL_DIR"
     mv "${tmp_dir}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
     chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
+
+    trap - EXIT
+    rm -rf "$tmp_dir"
 }
 
 add_to_path_instructions() {
